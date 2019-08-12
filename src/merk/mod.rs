@@ -138,8 +138,64 @@ struct MerkSource<'a> {
 }
 
 impl<'a> Fetch for MerkSource<'a> {
-    fn fetch(&self, key: &[u8]) -> Result<Tree> {
-        get_node(&self.db, key)
+    fn fetch(&self, link: &Link) -> Result<Tree> {
+        if link.height() > 0 {
+            return get_node(&self.db, link.key());
+        }
+
+        let mut iter = self.db.iterator(
+            rocksdb::IteratorMode::From(
+                link.key(),
+                rocksdb::Direction::Forward
+            )
+        );
+
+        fn get_next(
+            iter: &mut rocksdb::DBIterator,
+            expected_key: &[u8]
+        ) -> Result<Tree> {
+            match iter.next() {
+                None => bail!("end of iterator"),
+                Some((key, tree_bytes)) => {
+                    if key.as_ref() == ROOT_KEY_KEY {
+                        return get_next(iter, expected_key)
+                    }
+                    if key.as_ref() != expected_key {
+                        bail!("got wrong key");
+                    }
+                    Tree::decode(expected_key, tree_bytes.as_ref())
+                }
+            }
+        };
+
+        let tree = get_next(&mut iter, link.key())?;
+        let tree = match tree.link(false) {
+            None => tree,
+            Some(link) => {
+                let right = get_next(&mut iter, link.key())?;
+                let (tree, _) = tree.detach(false);
+                tree.attach(false, Some(right))
+            }
+        };
+        let tree = match tree.link(true) {
+            None => tree,
+            Some(link) => {
+                iter.set_mode(
+                    rocksdb::IteratorMode::From(
+                        tree.key(),
+                        rocksdb::Direction::Reverse
+                    )
+                );
+                iter.next();
+                let left = get_next(&mut iter, link.key())?;
+                let (tree, _) = tree.detach(true);
+                tree.attach(true, Some(left))
+            }
+        };
+
+        // iter
+
+        Ok(tree)
     }
 }
 
