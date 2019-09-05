@@ -21,7 +21,7 @@ const ROOT_KEY_KEY: [u8; 12] = *b"\00\00root\00\00";
 /// A handle to a Merkle key/value store backed by RocksDB.
 pub struct Merk {
     tree: Option<Tree>,
-    db: rocksdb::DB,
+    db: sled::Db,
     path: PathBuf
 }
 
@@ -29,13 +29,12 @@ impl Merk {
     /// Opens a store with the specified file path. If no store exists at that
     /// path, one will be created.
     pub fn open<P: AsRef<Path>>(path: P) -> Result<Merk> {
-        let db_opts = default_db_opts();
         let mut path_buf = PathBuf::new();
         path_buf.push(path);
-        let db = rocksdb::DB::open(&db_opts, &path_buf)?;
+        let db = sled::Db::open(&path_buf)?;
 
         // try to load root node
-        let tree = match db.get_pinned(ROOT_KEY_KEY)? {
+        let tree = match db.get(ROOT_KEY_KEY)? {
             Some(root_key) => Some(get_node(&db, &root_key)?),
             None => None
         };
@@ -136,7 +135,7 @@ impl Merk {
         let opts = default_db_opts();
         let path = self.path.clone();
         drop(self);
-        rocksdb::DB::destroy(&opts, path)?;
+        // sled::Db::destroy(&opts, path)?;
         Ok(())
     }
 
@@ -198,13 +197,14 @@ impl Merk {
     }
 
     pub fn flush(&self) -> Result<()> {
-        Ok(self.db.flush()?)
+        self.db.flush()?;
+        Ok(())
     }
 
     fn commit(&mut self, deleted_keys: LinkedList<Vec<u8>>) -> Result<()> {
         // TODO: concurrent commit
 
-        let mut batch = rocksdb::WriteBatch::default();
+        let mut batch = sled::Batch::default();
 
         if let Some(tree) = &mut self.tree {
             // TODO: configurable committer
@@ -219,24 +219,22 @@ impl Merk {
             committer.batch.sort_by(|a, b| a.0.cmp(&b.0));
             for (key, maybe_value) in committer.batch {
                 if let Some(value) = maybe_value {
-                    batch.put(key, value)?;
+                    batch.insert(key, value);
                 } else {
-                    batch.delete(key)?;
+                    batch.remove(key);
                 }
             }
 
             // update pointer to root node
-            batch.put(ROOT_KEY_KEY, tree.key())?;
+            batch.insert(&ROOT_KEY_KEY, tree.key());
         } else {
             // empty tree, delete pointer to root
-            batch.delete(ROOT_KEY_KEY)?;
+            // TODO: delete other keys
+            batch.remove(&ROOT_KEY_KEY);
         }
 
-        // write to db
-        let mut opts = rocksdb::WriteOptions::default();
-        opts.set_sync(false);
-        opts.disable_wal(true);
-        self.db.write_opt(batch, &opts)?;
+        self.db.apply_batch(batch)?;
+        self.flush()?;
 
         Ok(())
     }
@@ -258,7 +256,7 @@ impl Drop for Merk {
 
 #[derive(Clone)]
 struct MerkSource<'a> {
-    db: &'a rocksdb::DB
+    db: &'a sled::Db
 }
 
 impl<'a> Fetch for MerkSource<'a> {
@@ -294,8 +292,8 @@ impl Commit for MerkCommitter {
     }
 }
 
-fn get_node(db: &rocksdb::DB, key: &[u8]) -> Result<Tree> {
-    let bytes = db.get_pinned(key)?;
+fn get_node(db: &sled::Db, key: &[u8]) -> Result<Tree> {
+    let bytes = db.get(key)?;
     if let Some(bytes) = bytes {
         Tree::decode(key, &bytes)
     } else {
