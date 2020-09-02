@@ -1,6 +1,6 @@
 mod chunk;
 mod encoding;
-mod query;
+pub(crate) mod query;
 mod verify;
 
 use crate::tree::{Link, RefWalker, Fetch, Hash};

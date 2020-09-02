@@ -42,8 +42,14 @@ impl Query {
     }
 }
 
+impl Into<Vec<QueryItem>> for Query {
+    fn into(self) -> Vec<QueryItem> {
+        self.items.into_iter().collect()
+    }
+}
+
 #[derive(Clone, Debug)]
-enum QueryItem {
+pub(crate) enum QueryItem {
     Key(Vec<u8>),
     Range(Range<Vec<u8>>),
     RangeInclusive(RangeInclusive<Vec<u8>>)
@@ -160,24 +166,45 @@ impl<'a, S> RefWalker<'a, S>
     /// right edge, respectively.
     pub(crate) fn create_proof(
         &mut self,
-        keys: &[Vec<u8>],
-    ) -> Result<(
-        LinkedList<Op>,
-        (bool, bool)
-    )> {
-        let search = keys.binary_search_by(
-            |key| key.as_slice().cmp(self.tree().key())
+        query: &[QueryItem],
+    ) -> Result<(LinkedList<Op>, (bool, bool))> {
+        // TODO: don't copy into vec, support comparing QI to byte slice
+        let node_key = QueryItem::Key(self.tree().key().to_vec());
+        let search = query.binary_search_by(
+            |key| key.cmp(&node_key)
         );
 
-        let (left_keys, right_keys) = match search {
-            Ok(index) => (&keys[..index], &keys[index+1..]),
-            Err(index) => (&keys[..index], &keys[index..])
+        let (left_items, right_items) = match search {
+            Ok(index) => {
+                let item = &query[index];
+                let left_bound = item.lower_bound();
+                let right_bound = item.upper_bound().0;
+
+                // if range starts before this node's key, include it in left
+                // child's query
+                let left_query = if left_bound.as_slice() < self.tree().key() {
+                    &query[..=index]
+                } else {
+                    &query[..index]
+                };
+
+                // if range ends after this node's key, include it in right
+                // child's query
+                let right_query = if right_bound.as_slice() > self.tree().key() {
+                    &query[index..]
+                } else {
+                    &query[index + 1..]
+                };
+
+                (left_query, right_query)
+            },
+            Err(index) => (&query[..index], &query[index..])
         };
 
         let (mut proof, left_absence) =
-            self.create_child_proof(true, left_keys)?;
+            self.create_child_proof(true, left_items)?;
         let (mut right_proof, right_absence) =
-            self.create_child_proof(false, right_keys)?;
+            self.create_child_proof(false, right_items)?;
 
         let (has_left, has_right) = (
             !proof.is_empty(),
@@ -215,14 +242,11 @@ impl<'a, S> RefWalker<'a, S>
     fn create_child_proof(
         &mut self,
         left: bool,
-        keys: &[Vec<u8>]
-    ) -> Result<(
-        LinkedList<Op>,
-        (bool, bool)
-    )> {
-        Ok(if !keys.is_empty() {
+        query: &[QueryItem]
+    ) -> Result<(LinkedList<Op>, (bool, bool))> {
+        Ok(if !query.is_empty() {
             if let Some(mut child) = self.walk(left)? {
-                child.create_proof(keys)?
+                child.create_proof(query)?
             } else {
                 (LinkedList::new(), (true, true))
             }
@@ -288,7 +312,7 @@ mod test {
         let mut walker = RefWalker::new(&mut tree, PanicSource {});
 
         let (proof, absence) = walker
-            .create_proof(vec![vec![5]].as_slice())
+            .create_proof(vec![QueryItem::Key(vec![5])].as_slice())
             .expect("create_proof errored");
 
         let mut iter = proof.iter();
@@ -307,7 +331,7 @@ mod test {
         let mut walker = RefWalker::new(&mut tree, PanicSource {});
 
         let (proof, absence) = walker
-            .create_proof(vec![vec![3]].as_slice())
+            .create_proof(vec![QueryItem::Key(vec![3])].as_slice())
             .expect("create_proof errored");
 
         let mut iter = proof.iter();
@@ -326,7 +350,10 @@ mod test {
         let mut walker = RefWalker::new(&mut tree, PanicSource {});
 
         let (proof, absence) = walker
-            .create_proof(vec![vec![3], vec![7]].as_slice())
+            .create_proof(vec![
+                QueryItem::Key(vec![3]),
+                QueryItem::Key(vec![7])
+            ].as_slice())
             .expect("create_proof errored");
 
         let mut iter = proof.iter();
@@ -345,7 +372,11 @@ mod test {
         let mut walker = RefWalker::new(&mut tree, PanicSource {});
 
         let (proof, absence) = walker
-            .create_proof(vec![vec![3], vec![5], vec![7]].as_slice())
+            .create_proof(vec![
+                QueryItem::Key(vec![3]),
+                QueryItem::Key(vec![5]),
+                QueryItem::Key(vec![7])
+            ].as_slice())
             .expect("create_proof errored");
 
         let mut iter = proof.iter();
@@ -364,7 +395,7 @@ mod test {
         let mut walker = RefWalker::new(&mut tree, PanicSource {});
 
         let (proof, absence) = walker
-            .create_proof(vec![vec![8]].as_slice())
+            .create_proof(vec![QueryItem::Key(vec![8])].as_slice())
             .expect("create_proof errored");
 
         let mut iter = proof.iter();
@@ -383,7 +414,7 @@ mod test {
         let mut walker = RefWalker::new(&mut tree, PanicSource {});
 
         let (proof, absence) = walker
-            .create_proof(vec![vec![6]].as_slice())
+            .create_proof(vec![QueryItem::Key(vec![6])].as_slice())
             .expect("create_proof errored");
 
         let mut iter = proof.iter();
@@ -481,10 +512,10 @@ mod test {
         let mut walker = RefWalker::new(&mut tree, PanicSource {});
 
         let (proof, absence) = walker.create_proof(vec![
-            vec![1],
-            vec![2],
-            vec![3],
-            vec![4]
+            QueryItem::Key(vec![1]),
+            QueryItem::Key(vec![2]),
+            QueryItem::Key(vec![3]),
+            QueryItem::Key(vec![4])
         ].as_slice()).expect("create_proof errored");
 
         let mut iter = proof.iter();
