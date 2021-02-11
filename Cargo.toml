@@ -7,9 +7,9 @@ edition = "2018"
 license = "MIT"
 
 [dependencies]
-time = "0.1.42"
+time = "0.2.25"
 hex = "0.4.2"
-colored = "1.8.0"
+colored = "2.0.0"
 num_cpus = "1.10.0"
 byteorder = "1.3.2"
 failure = "0.1.6"
@@ -20,11 +20,11 @@ version = "0.2.18"
 features = ["bench", "simd_asm"]
 
 [dependencies.rand]
-version = "0.7.0"
+version = "0.8.3"
 features = ["small_rng"]
 
 [dependencies.rocksdb]
-version = "0.14.0"
+version = "0.15.0"
 default-features = false
 
 [dependencies.jemallocator]
